@@ -201,8 +201,9 @@ async function ensureDir(p) {
 }
 
 function safeId(id) {
-  return String(id || "unknown").replace(/[^a-z0-9_\\-:.]/gi, "_");
+  return String(id || "unknown").replace(/[^a-z0-9_.:~-]/gi, "_");
 }
+
 
 function parseHttpxJsonLines(stdout) {
   const lines = stdout.split("\\n").map(l => l.trim()).filter(Boolean);
