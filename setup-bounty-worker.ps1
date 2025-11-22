@@ -416,7 +416,7 @@ $ip = Get-NetIPAddress -AddressFamily IPv4 `
 if (-not $ip) {
     Write-Warning "Could not detect a suitable IPv4 address. Worker will still run, but registration may fail."
 } else {
-    $workerUrl = "http://$ip:$port"
+    $workerUrl = "http://$($ip):$port"
     Write-Host "[*] Detected IP: $ip"
     Write-Host "[*] Worker URL: $workerUrl"
     Write-Host "[*] Registering worker with Pi at $($piUrl)/api/workers/register ..."
