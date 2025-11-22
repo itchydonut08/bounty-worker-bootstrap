@@ -1,43 +1,28 @@
 # setup-bounty-worker.ps1
 # One-shot installer for a Windows bounty worker.
-# Does:
-#   - Install Node.js LTS via winget (if node is missing)
-#   - Download & install subfinder, httpx, nuclei to C:\BountyTools
-#   - Add C:\BountyTools to PATH (user)
-#   - Create C:\bounty-worker with:
-#       * bounty-worker.mjs
-#       * worker-config.json
-#       * register-and-run.ps1
-#       * start_worker.vbs
-#   - Run register-and-run.ps1 (which starts the worker & registers with Pi)
-#
-# After this:
-#   - Double-click C:\bounty-worker\start_worker.vbs to start worker hidden.
+# Safe to run via: irm '.../setup-bounty-worker.ps1' | iex
 
 $ErrorActionPreference = "Stop"
 
 Write-Host "=== Bounty Worker Setup ==="
 
-# ---------- Helpers ----------
-
 function Assert-Admin {
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
-        Write-Warning "This script should be run as Administrator. Right-click it and choose 'Run with PowerShell' or 'Run as Administrator'."
-        Read-Host "Press Enter to continue anyway (may fail), or Ctrl+C to quit"
+        Write-Warning "This script should be run as Administrator for best results."
+        [void](Read-Host "Press Enter to continue anyway (may fail), or Ctrl+C to quit")
     }
 }
 
 function Ensure-Folder($path) {
-    if (-not (Test-Path $path)) {
+    if (-not (Test-Path -LiteralPath $path)) {
         New-Item -ItemType Directory -Path $path | Out-Null
     }
 }
 
-function Ensure-Tool-In-Path($exeName) {
-    $cmd = Get-Command $exeName -ErrorAction SilentlyContinue
-    return [bool]$cmd
+function Tool-Exists($name) {
+    return [bool](Get-Command $name -ErrorAction SilentlyContinue)
 }
 
 function Append-To-UserPath($dir) {
@@ -52,50 +37,46 @@ function Append-To-UserPath($dir) {
 
     $newPath = ($userPath.TrimEnd(";") + ";" + $dir)
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-    Write-Host "[PATH] Added $dir to user PATH. You may need to open a new PowerShell/terminal for it to take effect there."
+    Write-Host "[PATH] Added $dir to user PATH. Open a new terminal for it to apply there."
 }
 
 Assert-Admin
 
-# ---------- Config ----------
-
-$ToolsDir  = "C:\BountyTools"
-$WorkerDir = "C:\bounty-worker"
-$PiUrl     = "http://bountypi.local:3000"
+# --- Config ---
+$ToolsDir   = "C:\BountyTools"
+$WorkerDir  = "C:\bounty-worker"
+$PiUrl      = "http://bountypi.local:3000"  # change to http://<pi-ip>:3000 if needed
 $WorkerPort = 4000
 
 Ensure-Folder $ToolsDir
 Ensure-Folder $WorkerDir
 
-# ---------- 1. Ensure Node.js LTS ----------
-
-if (Ensure-Tool-In-Path "node") {
+# --- 1. Ensure Node.js LTS ---
+if (Tool-Exists "node") {
     Write-Host "[Node] Node.js already installed."
 } else {
     Write-Host "[Node] Node.js not found. Attempting to install via winget..."
-    if (Ensure-Tool-In-Path "winget") {
+    if (Tool-Exists "winget") {
         try {
             winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
-            Write-Host "[Node] Winget installation attempted. Restart this script if node is still missing."
+            Write-Host "[Node] Winget installation attempted. If node is still missing, install manually."
         } catch {
-            Write-Warning "[Node] winget install failed: $($_.Exception.Message)"
+            Write-Warning ("[Node] winget install failed with error: {0}" -f $_.Exception.Message)
             Write-Warning "Please install Node.js LTS manually from https://nodejs.org and re-run this script."
             throw
         }
     } else {
-        Write-Warning "[Node] winget not found. Please install Node.js LTS manually from https://nodejs.org, then re-run this script."
-        throw "Node.js missing and winget unavailable."
+        Write-Warning "[Node] winget is not available. Please install Node.js LTS manually and re-run this script."
+        throw "Node.js missing and winget not found."
     }
 }
 
-# After install attempt, re-check
-if (-not (Ensure-Tool-In-Path "node")) {
-    Write-Warning "[Node] Node.js still not found in PATH. Please install it and try again."
-    throw "Node.js not available."
+if (-not (Tool-Exists "node")) {
+    Write-Warning "[Node] Node.js still not found in PATH. Aborting."
+    throw "Node.js not available after installation attempt."
 }
 
-# ---------- 2. Install ProjectDiscovery tools ----------
-
+# --- 2. Install ProjectDiscovery tools (subfinder, httpx, nuclei) ---
 $downloads = @(
     @{
         Name = "subfinder"
@@ -119,42 +100,42 @@ Ensure-Folder $tempRoot
 
 foreach ($tool in $downloads) {
     $exePath = Join-Path $ToolsDir $tool.Exe
-    if (Test-Path $exePath) {
-        Write-Host "[Tools] $($tool.Name) already present at $exePath"
+    if (Test-Path -LiteralPath $exePath) {
+        Write-Host ("[Tools] {0} already present at {1}" -f $tool.Name, $exePath)
         continue
     }
 
-    Write-Host "[Tools] Downloading $($tool.Name)..."
+    Write-Host ("[Tools] Downloading {0}..." -f $tool.Name)
     $zipTemp = Join-Path $tempRoot ($tool.Name + ".zip")
     Invoke-WebRequest -Uri $tool.Url -OutFile $zipTemp
 
     $extractDir = Join-Path $tempRoot $tool.Name
-    if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
+    if (Test-Path -LiteralPath $extractDir) {
+        Remove-Item -Recurse -Force $extractDir
+    }
     Expand-Archive -Path $zipTemp -DestinationPath $extractDir
 
-    # Try to find the exe
     $foundExe = Get-ChildItem -Path $extractDir -Recurse -Filter $tool.Exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($foundExe) {
         Copy-Item $foundExe.FullName $exePath
-        Write-Host "[Tools] Installed $($tool.Name) to $exePath"
+        Write-Host ("[Tools] Installed {0} to {1}" -f $tool.Name, $exePath)
     } else {
-        Write-Warning "[Tools] Could not find $($tool.Exe) inside extracted archive."
+        Write-Warning ("[Tools] Could not find {0} inside archive for {1}" -f $tool.Exe, $tool.Name)
     }
 }
 
 Append-To-UserPath $ToolsDir
 
-Write-Host "[Tools] Checking tools on PATH..."
+Write-Host "[Tools] Quick check on PATH:"
 foreach ($name in @("subfinder","httpx","nuclei")) {
-    if (Ensure-Tool-In-Path $name) {
-        Write-Host "  - $name OK"
+    if (Tool-Exists $name) {
+        Write-Host ("  - {0} OK" -f $name)
     } else {
-        Write-Warning "  - $name NOT found. Use a new terminal or verify PATH includes $ToolsDir."
+        Write-Warning ("  - {0} NOT found. Use a new PowerShell window or ensure PATH includes {1}" -f $name, $ToolsDir)
     }
 }
 
-# ---------- 3. Create bounty-worker Node project ----------
-
+# --- 3. Create bounty-worker Node project ---
 Set-Location $WorkerDir
 
 # package.json
@@ -182,25 +163,25 @@ npm install | Out-Null
 
 # bounty-worker.mjs
 $workerJs = @'
-import express from 'express';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
+import express from "express";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
 const app = express();
 const PORT = 4000;
 
-const DATA_DIR = path.join(process.cwd(), 'worker-data');
-const RECON_DIR = path.join(DATA_DIR, 'recon');
+const DATA_DIR = path.join(process.cwd(), "worker-data");
+const RECON_DIR = path.join(DATA_DIR, "recon");
 
 const SUBFINDER_RL = 20;
 const HTTPX_RL = 20;
 const HTTPX_THREADS = 30;
 
-const NUCLEI_SEVERITIES = 'medium,high,critical';
+const NUCLEI_SEVERITIES = "medium,high,critical";
 const NUCLEI_RL = 10;
 const NUCLEI_CONCURRENCY = 10;
 
@@ -209,11 +190,11 @@ async function ensureDir(p) {
 }
 
 function safeId(id) {
-  return String(id || 'unknown').replace(/[^a-z0-9_\\-:.]/gi, '_');
+  return String(id || "unknown").replace(/[^a-z0-9_\\-:.]/gi, "_");
 }
 
 function parseHttpxJsonLines(stdout) {
-  const lines = stdout.split('\\n').map(l => l.trim()).filter(Boolean);
+  const lines = stdout.split("\\n").map(l => l.trim()).filter(Boolean);
   const liveHosts = [];
   const urls = [];
 
@@ -226,7 +207,7 @@ function parseHttpxJsonLines(stdout) {
       liveHosts.push({
         url,
         status: obj.status_code,
-        title: obj.title || ''
+        title: obj.title || ""
       });
     } catch {
       // ignore
@@ -237,18 +218,18 @@ function parseHttpxJsonLines(stdout) {
 }
 
 function parseNucleiJsonLines(stdout) {
-  const lines = stdout.split('\\n').map(l => l.trim()).filter(Boolean);
+  const lines = stdout.split("\\n").map(l => l.trim()).filter(Boolean);
   const findings = [];
 
   for (const line of lines) {
     try {
       const obj = JSON.parse(line);
       findings.push({
-        template: obj.template || obj.id || '',
-        severity: obj.info?.severity || '',
-        url: obj.url || '',
-        matcher: obj.matcher_name || '',
-        type: obj.type || ''
+        template: obj.template || obj.id || "",
+        severity: obj.info?.severity || "",
+        url: obj.url || "",
+        matcher: obj.matcher_name || "",
+        type: obj.type || ""
       });
     } catch {
       // ignore
@@ -260,34 +241,34 @@ function parseNucleiJsonLines(stdout) {
 
 app.use(express.json());
 
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, msg: 'bounty worker online' });
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, msg: "bounty worker online" });
 });
 
-app.post('/api/recon', async (req, res) => {
+app.post("/api/recon", async (req, res) => {
   try {
     const { id, platform, name, domains } = req.body || {};
     if (!domains || !Array.isArray(domains) || domains.length === 0) {
-      return res.status(400).json({ error: 'domains array required' });
+      return res.status(400).json({ error: "domains array required" });
     }
 
     const sid = safeId(id || name);
     const workDir = path.join(RECON_DIR, sid);
     await ensureDir(workDir);
 
-    const domainsPath = path.join(workDir, 'domains.txt');
-    await fs.writeFile(domainsPath, domains.join('\\n') + '\\n', 'utf8');
+    const domainsPath = path.join(workDir, "domains.txt");
+    await fs.writeFile(domainsPath, domains.join("\\n") + "\\n", "utf8");
 
     const pipelineCmd = [
       `cd "${workDir}"`,
       `subfinder -dL "${domainsPath}" -silent -rl ${SUBFINDER_RL}`,
-      `sort -u`,
+      "sort -u",
       `httpx -silent -json -threads ${HTTPX_THREADS} -rl ${HTTPX_RL} -mc 200,301,302`
-    ].join(' | ');
+    ].join(" | ");
 
     console.log(\`[worker] recon pipeline for \${id || name} -> \${pipelineCmd}\`);
 
-    let httpxStdout = '';
+    let httpxStdout = "";
     try {
       const result = await execAsync(pipelineCmd, {
         maxBuffer: 50 * 1024 * 1024,
@@ -295,8 +276,8 @@ app.post('/api/recon', async (req, res) => {
       });
       httpxStdout = result.stdout;
     } catch (err) {
-      console.error('[worker] recon pipeline error:', err.message);
-      httpxStdout = err.stdout || '';
+      console.error("[worker] recon pipeline error:", err.message);
+      httpxStdout = err.stdout || "";
     }
 
     const { liveHosts, urls } = parseHttpxJsonLines(httpxStdout);
@@ -304,8 +285,8 @@ app.post('/api/recon', async (req, res) => {
 
     let nucleiFindings = [];
     if (urls.length > 0) {
-      const urlsPath = path.join(workDir, 'urls.txt');
-      await fs.writeFile(urlsPath, urls.join('\\n') + '\\n', 'utf8');
+      const urlsPath = path.join(workDir, "urls.txt");
+      await fs.writeFile(urlsPath, urls.join("\\n") + "\\n", "utf8");
 
       const nucleiCmd = [
         `cd "${workDir}"`,
@@ -313,7 +294,7 @@ app.post('/api/recon', async (req, res) => {
         `-severity ${NUCLEI_SEVERITIES}`,
         `-rl ${NUCLEI_RL}`,
         `-c ${NUCLEI_CONCURRENCY}`
-      ].join(' ');
+      ].join(" ");
 
       console.log(\`[worker] nuclei for \${id || name} -> \${nucleiCmd}\`);
 
@@ -322,15 +303,15 @@ app.post('/api/recon', async (req, res) => {
           maxBuffer: 50 * 1024 * 1024,
           shell: true
         });
-        nucleiFindings = parseNucleiJsonLines(result.stdout || '');
+        nucleiFindings = parseNucleiJsonLines(result.stdout || "");
       } catch (err) {
-        console.error('[worker] nuclei error:', err.message);
-        nucleiFindings = parseNucleiJsonLines(err.stdout || '');
+        console.error("[worker] nuclei error:", err.message);
+        nucleiFindings = parseNucleiJsonLines(err.stdout || "");
       }
 
       console.log(\`[worker] \${id || name}: \${nucleiFindings.length} nuclei findings\`);
     } else {
-      console.log('[worker] no live URLs, skipping nuclei');
+      console.log("[worker] no live URLs, skipping nuclei");
     }
 
     res.json({
@@ -342,12 +323,12 @@ app.post('/api/recon', async (req, res) => {
       nucleiFindings
     });
   } catch (e) {
-    console.error('[worker] fatal error in /api/recon', e);
-    res.status(500).json({ error: 'worker error' });
+    console.error("[worker] fatal error in /api/recon", e);
+    res.status(500).json({ error: "worker error" });
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(\`Bounty worker listening on http://0.0.0.0:\${PORT}\`);
 });
 '@
@@ -374,7 +355,7 @@ $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
 $configPath = Join-Path $PSScriptRoot "worker-config.json"
-if (Test-Path $configPath) {
+if (Test-Path -LiteralPath $configPath) {
     $config = Get-Content $configPath -Raw | ConvertFrom-Json
 } else {
     $config = [pscustomobject]@{
@@ -390,7 +371,7 @@ $name  = $config.name
 
 function Check-Tool($name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
-        Write-Warning "$name not found in PATH. Please install it (or add to PATH) before using this worker."
+        Write-Warning ("{0} not found in PATH. Install it or add to PATH." -f $name)
     }
 }
 
@@ -417,9 +398,9 @@ if (-not $ip) {
     Write-Warning "Could not detect a suitable IPv4 address. Worker will still run, but registration may fail."
 } else {
     $workerUrl = "http://$($ip):$port"
-    Write-Host "[*] Detected IP: $ip"
-    Write-Host "[*] Worker URL: $workerUrl"
-    Write-Host "[*] Registering worker with Pi at $($piUrl)/api/workers/register ..."
+    Write-Host ("[*] Detected IP: {0}" -f $ip)
+    Write-Host ("[*] Worker URL: {0}" -f $workerUrl)
+    Write-Host ("[*] Registering worker with Pi at {0}/api/workers/register ..." -f $piUrl)
 
     try {
         $body = @{
@@ -427,16 +408,17 @@ if (-not $ip) {
             name = $name
         } | ConvertTo-Json
 
-        $resp = Invoke-RestMethod -Method Post -Uri "$piUrl/api/workers/register" `
+        $resp = Invoke-RestMethod -Method Post -Uri ("{0}/api/workers/register" -f $piUrl) `
             -Body $body -ContentType "application/json"
 
-        Write-Host "[+] Registration response:" ($resp | ConvertTo-Json -Depth 4)
+        Write-Host "[+] Registration response:"
+        $resp | ConvertTo-Json -Depth 4
     } catch {
-        Write-Warning "Failed to register worker with Pi: $($_.Exception.Message)"
+        Write-Warning ("Failed to register worker with Pi. Error: {0}" -f $_.Exception.Message)
     }
 }
 
-Write-Host "[*] Done. Worker should now be active. Pi will use it automatically."
+Write-Host "[*] Done. Worker should now be active."
 '@
 
 $registerPath = Join-Path $WorkerDir "register-and-run.ps1"
@@ -459,12 +441,9 @@ shell.Run cmd, 0, False
 $startVbsPath = Join-Path $WorkerDir "start_worker.vbs"
 $startVbs | Out-File -FilePath $startVbsPath -Encoding ascii -Force
 
-Write-Host "[Worker] Files created in $WorkerDir"
-
-# ---------- 4. Kick off worker once ----------
+Write-Host ("[Worker] Files created in {0}" -f $WorkerDir)
 
 Write-Host "[Worker] Launching worker (register-and-run.ps1) hidden..."
-Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$registerPath`"" -WindowStyle Hidden
+Start-Process powershell -ArgumentList ("-ExecutionPolicy Bypass -File `"{0}`"" -f $registerPath) -WindowStyle Hidden
 
-Write-Host "=== Setup complete. Worker is starting. ==="
-Write-Host "Next time, just double-click: $startVbsPath"
+Write-Host "=== Setup complete. Worker is starting. Next time, double-click start_worker.vbs ==="
