@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bounty Worker Commands – itchydonut08</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 800px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      line-height: 1.5;
+      background: #0f172a;
+      color: #e5e7eb;
+    }
+    h1, h2 {
+      color: #facc15;
+    }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    pre {
+      background: #020617;
+      border-radius: 0.5rem;
+      padding: 1rem;
+      overflow-x: auto;
+      border: 1px solid #1e293b;
+    }
+    .block {
+      margin-bottom: 2rem;
+    }
+    .note {
+      font-size: 0.9rem;
+      color: #9ca3af;
+    }
+  </style>
+</head>
+<body>
+  <h1>Bounty Worker – install / uninstall</h1>
+  <p>
+    Bookmark this page: <strong>itchydonut08.github.io/bounty-worker-bootstrap</strong><br>
+    From any Windows machine, run these in an <strong>Administrator</strong> PowerShell.
+  </p>
+
+  <div class="block">
+    <h2>📥 Install / enroll this machine as a worker</h2>
+    <p class="note">This installs Node (if needed), subfinder, httpx, nuclei, and the worker at <code>C:\bounty-worker</code>.</p>
+    <pre><code>powershell -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/itchydonut08/bounty-worker-bootstrap/main/setup-bounty-worker.ps1' | iex"</code></pre>
+  </div>
+
+  <div class="block">
+    <h2>🧹 Uninstall / remove worker from this machine</h2>
+    <p class="note">This stops the worker, removes <code>C:\bounty-worker</code>, <code>C:\BountyTools</code>, and cleans PATH.</p>
+    <pre><code>powershell -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/itchydonut08/bounty-worker-bootstrap/main/uninstall-bounty-worker.ps1' | iex"</code></pre>
+  </div>
+
+  <div class="block note">
+    <p>
+      Your Pi is expected at <code>http://bountypi.local:3000</code>.<br>
+      Each worker auto-registers itself via <code>/api/workers/register</code>.
+    </p>
+  </div>
+</body>
+</html>
