@@ -1,10 +1,17 @@
 # setup-bounty-worker.ps1
 # One-shot installer for a Windows bounty worker.
-# Safe to run via: irm '.../setup-bounty-worker.ps1' | iex
+# - Installs Node (via winget if needed)
+# - Installs subfinder / httpx / nuclei to C:\BountyTools
+# - Creates C:\bounty-worker Node project
+# - Registers a Scheduled Task "BountyWorker" to start at logon (hidden)
+# - Starts the task immediately
+#
+# Safe to run via:
+#   irm 'https://raw.githubusercontent.com/itchydonut08/bounty-worker-bootstrap/main/setup-bounty-worker.ps1' | iex
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Bounty Worker Setup ==="
+Write-Host "=== Bounty Worker Setup (with startup) ==="
 
 function Assert-Admin {
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -31,13 +38,13 @@ function Append-To-UserPath($dir) {
 
     $parts = $userPath.Split(";", [System.StringSplitOptions]::RemoveEmptyEntries)
     if ($parts -contains $dir) {
-        Write-Host "[PATH] $dir already in user PATH."
+        Write-Host ("[PATH] {0} already in user PATH." -f $dir)
         return
     }
 
     $newPath = ($userPath.TrimEnd(";") + ";" + $dir)
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-    Write-Host "[PATH] Added $dir to user PATH. Open a new terminal for it to apply there."
+    Write-Host ("[PATH] Added {0} to user PATH (new terminals will see it)." -f $dir)
 }
 
 Assert-Admin
@@ -45,11 +52,15 @@ Assert-Admin
 # --- Config ---
 $ToolsDir   = "C:\BountyTools"
 $WorkerDir  = "C:\bounty-worker"
-$PiUrl      = "http://bountypi.local:3000"  # change to http://<pi-ip>:3000 if needed
+$PiUrl      = "http://bountypi.local:3000"  # change to http://<pi-ip>:3000 if DNS doesn't work
 $WorkerPort = 4000
+$TaskName   = "BountyWorker"
 
 Ensure-Folder $ToolsDir
 Ensure-Folder $WorkerDir
+
+Write-Host ("[*] Tools directory:  {0}" -f $ToolsDir)
+Write-Host ("[*] Worker directory: {0}" -f $WorkerDir)
 
 # --- 1. Ensure Node.js LTS ---
 if (Tool-Exists "node") {
@@ -61,7 +72,7 @@ if (Tool-Exists "node") {
             winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
             Write-Host "[Node] Winget installation attempted. If node is still missing, install manually."
         } catch {
-            Write-Warning ("[Node] winget install failed with error: {0}" -f $_.Exception.Message)
+            Write-Warning ("[Node] winget install failed: {0}" -f $_.Exception.Message)
             Write-Warning "Please install Node.js LTS manually from https://nodejs.org and re-run this script."
             throw
         }
@@ -131,7 +142,7 @@ foreach ($name in @("subfinder","httpx","nuclei")) {
     if (Tool-Exists $name) {
         Write-Host ("  - {0} OK" -f $name)
     } else {
-        Write-Warning ("  - {0} NOT found. Use a new PowerShell window or ensure PATH includes {1}" -f $name, $ToolsDir)
+        Write-Warning ("  - {0} NOT found. Open a new PowerShell window or ensure PATH includes {1}" -f $name, $ToolsDir)
     }
 }
 
@@ -161,7 +172,7 @@ $packageJson | Out-File -FilePath $packagePath -Encoding utf8 -Force
 Write-Host "[Worker] Installing Node dependencies (express)..."
 npm install | Out-Null
 
-# bounty-worker.mjs
+# bounty-worker.mjs (worker server)
 $workerJs = @'
 import express from "express";
 import fs from "node:fs/promises";
@@ -266,7 +277,7 @@ app.post("/api/recon", async (req, res) => {
       `httpx -silent -json -threads ${HTTPX_THREADS} -rl ${HTTPX_RL} -mc 200,301,302`
     ].join(" | ");
 
-    console.log(\`[worker] recon pipeline for \${id || name} -> \${pipelineCmd}\`);
+    console.log(`[worker] recon pipeline for ${id || name} -> ${pipelineCmd}`);
 
     let httpxStdout = "";
     try {
@@ -281,7 +292,7 @@ app.post("/api/recon", async (req, res) => {
     }
 
     const { liveHosts, urls } = parseHttpxJsonLines(httpxStdout);
-    console.log(\`[worker] \${id || name}: \${liveHosts.length} live hosts\`);
+    console.log(`[worker] ${id || name}: ${liveHosts.length} live hosts`);
 
     let nucleiFindings = [];
     if (urls.length > 0) {
@@ -296,7 +307,7 @@ app.post("/api/recon", async (req, res) => {
         `-c ${NUCLEI_CONCURRENCY}`
       ].join(" ");
 
-      console.log(\`[worker] nuclei for \${id || name} -> \${nucleiCmd}\`);
+      console.log(`[worker] nuclei for ${id || name} -> ${nucleiCmd}`);
 
       try {
         const result = await execAsync(nucleiCmd, {
@@ -309,7 +320,7 @@ app.post("/api/recon", async (req, res) => {
         nucleiFindings = parseNucleiJsonLines(err.stdout || "");
       }
 
-      console.log(\`[worker] \${id || name}: \${nucleiFindings.length} nuclei findings\`);
+      console.log(`[worker] ${id || name}: ${nucleiFindings.length} nuclei findings`);
     } else {
       console.log("[worker] no live URLs, skipping nuclei");
     }
@@ -329,14 +340,14 @@ app.post("/api/recon", async (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(\`Bounty worker listening on http://0.0.0.0:\${PORT}\`);
+  console.log(`Bounty worker listening on http://0.0.0.0:${PORT}`);
 });
 '@
 
 $workerJsPath = Join-Path $WorkerDir "bounty-worker.mjs"
 $workerJs | Out-File -FilePath $workerJsPath -Encoding utf8 -Force
 
-# worker-config.json
+# worker-config.json (inject PiUrl & port)
 $configJson = @"
 {
   "piUrl": "$PiUrl",
@@ -348,7 +359,7 @@ $configJson = @"
 $configPath = Join-Path $WorkerDir "worker-config.json"
 $configJson | Out-File -FilePath $configPath -Encoding utf8 -Force
 
-# register-and-run.ps1
+# register-and-run.ps1 (used by startup task / VBS)
 $registerPs1 = @'
 $ErrorActionPreference = "Stop"
 
@@ -424,7 +435,7 @@ Write-Host "[*] Done. Worker should now be active."
 $registerPath = Join-Path $WorkerDir "register-and-run.ps1"
 $registerPs1 | Out-File -FilePath $registerPath -Encoding utf8 -Force
 
-# start_worker.vbs
+# start_worker.vbs (called by Scheduled Task, fully hidden)
 $startVbs = @'
 Dim shell, fso, scriptPath, folder
 Set shell = CreateObject("WScript.Shell")
@@ -443,7 +454,42 @@ $startVbs | Out-File -FilePath $startVbsPath -Encoding ascii -Force
 
 Write-Host ("[Worker] Files created in {0}" -f $WorkerDir)
 
-Write-Host "[Worker] Launching worker (register-and-run.ps1) hidden..."
-Start-Process powershell -ArgumentList ("-ExecutionPolicy Bypass -File `"{0}`"" -f $registerPath) -WindowStyle Hidden
+# --- 4. Create Scheduled Task for startup ---
+Write-Host ""
+Write-Host ("[*] Configuring startup task '{0}'..." -f $TaskName)
 
-Write-Host "=== Setup complete. Worker is starting. Next time, double-click start_worker.vbs ==="
+# Remove existing task if any
+try {
+    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host ("  - Removing existing task {0}..." -f $TaskName)
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    }
+} catch {
+    Write-Warning ("  - Could not inspect/remove existing task: {0}" -f $_.Exception.Message)
+}
+
+$arg     = '"' + $startVbsPath + '"'
+$action  = New-ScheduledTaskAction -Execute "wscript.exe" -Argument $arg
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+
+try {
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Description "Start bounty worker at user logon" | Out-Null
+    Write-Host ("[+] Scheduled task {0} created. Worker will start automatically on logon." -f $TaskName)
+} catch {
+    Write-Warning ("[!] Failed to register scheduled task: {0}" -f $_.Exception.Message)
+}
+
+# Start it right now
+try {
+    Write-Host "[*] Starting scheduled task now..."
+    Start-ScheduledTask -TaskName $TaskName
+    Write-Host "[+] Worker launch requested via Scheduled Task."
+} catch {
+    Write-Warning ("  - Could not start scheduled task immediately: {0}" -f $_.Exception.Message)
+}
+
+Write-Host ""
+Write-Host "=== Setup complete. Worker should now be running in the background and will auto-start on logon. ==="
+Write-Host "To verify from this machine:  Invoke-RestMethod http://localhost:4000/api/health"
+Write-Host "To uninstall everything later, use uninstall-bounty-worker.ps1."
