@@ -1,10 +1,5 @@
-
 # uninstall-bounty-worker.ps1
-# Undoes what setup-bounty-worker.ps1 did:
-#   - Stop any bounty-worker node processes
-#   - Remove C:\bounty-worker
-#   - Remove C:\BountyTools
-#   - Remove C:\BountyTools from user PATH
+# Safe to run via: irm '.../uninstall-bounty-worker.ps1' | iex
 
 $ErrorActionPreference = "Stop"
 
@@ -15,7 +10,7 @@ function Assert-Admin {
     $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
         Write-Warning "This script should be run as Administrator."
-        Read-Host "Press Enter to continue anyway (may fail), or Ctrl+C to quit"
+        [void](Read-Host "Press Enter to continue anyway (may fail), or Ctrl+C to quit")
     }
 }
 
@@ -29,13 +24,13 @@ function Remove-From-UserPath($dir) {
     $parts = $userPath.Split(";", [System.StringSplitOptions]::RemoveEmptyEntries)
     $newParts = $parts | Where-Object { $_ -ne $dir }
     if ($newParts.Count -eq $parts.Count) {
-        Write-Host "[PATH] $dir was not in user PATH."
+        Write-Host ("[PATH] {0} was not in user PATH." -f $dir)
         return
     }
 
     $newPath = ($newParts -join ";")
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-    Write-Host "[PATH] Removed $dir from user PATH."
+    Write-Host ("[PATH] Removed {0} from user PATH." -f $dir)
 }
 
 Assert-Admin
@@ -46,54 +41,52 @@ $WorkerDir = "C:\bounty-worker"
 Write-Host "[*] Trying to stop any running bounty-worker node processes..."
 
 try {
-    # Find node.exe processes whose CommandLine includes 'bounty-worker.mjs'
     $procs = Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -match "bounty-worker\.mjs" }
 
     if ($procs) {
         foreach ($p in $procs) {
-            Write-Host "  - Killing PID $($p.ProcessId) (node bounty-worker.mjs)"
+            Write-Host ("  - Terminating PID {0} (node bounty-worker.mjs)" -f $p.ProcessId)
             Invoke-CimMethod -InputObject $p -MethodName Terminate | Out-Null
         }
     } else {
         Write-Host "  - No bounty-worker node processes found."
     }
 } catch {
-    Write-Warning "Could not inspect/kill node processes: $($_.Exception.Message)"
+    Write-Warning ("Could not inspect or kill node processes. Error: {0}" -f $_.Exception.Message)
 }
 
-Write-Host "[*] Removing worker directory: $WorkerDir"
-if (Test-Path $WorkerDir) {
+Write-Host ("[*] Removing worker directory {0}" -f $WorkerDir)
+if (Test-Path -LiteralPath $WorkerDir) {
     try {
-        Remove-Item -Recurse -Force $WorkerDir
-        Write-Host "  - Removed $WorkerDir"
+        Remove-Item -Recurse -Force -LiteralPath $WorkerDir
+        Write-Host ("  - Removed {0}" -f $WorkerDir)
     } catch {
-        Write-Warning "  - Failed to remove $WorkerDir: $($_.Exception.Message)"
+        Write-Warning ("  - Failed to remove worker directory {0}. Error: {1}" -f $WorkerDir, $_.Exception.Message)
     }
 } else {
-    Write-Host "  - $WorkerDir does not exist."
+    Write-Host ("  - {0} does not exist." -f $WorkerDir)
 }
 
-Write-Host "[*] Removing tools directory: $ToolsDir"
-if (Test-Path $ToolsDir) {
+Write-Host ("[*] Removing tools directory {0}" -f $ToolsDir)
+if (Test-Path -LiteralPath $ToolsDir) {
     try {
-        Remove-Item -Recurse -Force $ToolsDir
-        Write-Host "  - Removed $ToolsDir"
+        Remove-Item -Recurse -Force -LiteralPath $ToolsDir
+        Write-Host ("  - Removed {0}" -f $ToolsDir)
     } catch {
-        Write-Warning "  - Failed to remove $ToolsDir: $($_.Exception.Message)"
+        Write-Warning ("  - Failed to remove tools directory {0}. Error: {1}" -f $ToolsDir, $_.Exception.Message)
     }
 } else {
-    Write-Host "  - $ToolsDir does not exist."
+    Write-Host ("  - {0} does not exist." -f $ToolsDir)
 }
 
-Write-Host "[*] Cleaning up PATH entry for $ToolsDir"
+Write-Host ("[*] Cleaning up PATH entry for {0}" -f $ToolsDir)
 Remove-From-UserPath $ToolsDir
 
 Write-Host ""
 Write-Host "=== Uninstall complete. ==="
-Write-Host "If you created any aliases in your PowerShell profile (like 'setup-bounty-worker'),"
-Write-Host "you can remove those lines from:"
-Write-Host "  $PROFILE"
+Write-Host "If you added any aliases (like setup-bounty-worker) to your PowerShell profile, remove them from:"
+Write-Host ("  {0}" -f $PROFILE)
 Write-Host ""
-Write-Host "Node.js is still installed. If you want to remove Node completely, use Apps & Features"
-Write-Host "or 'winget uninstall OpenJS.NodeJS.LTS' (if winget is installed)."
+Write-Host "Node.js is still installed. If you want to remove Node entirely, use Apps & Features or:"
+Write-Host "  winget uninstall OpenJS.NodeJS.LTS"
